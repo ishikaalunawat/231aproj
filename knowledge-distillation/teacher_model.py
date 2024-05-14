@@ -22,25 +22,4 @@ class TeacherModel(AsymmetricCroCo3DStereo):
             pred1, pred2 = model(view1, view2)
 
         # Do global optimization of the output
-
-
-# Instantiate the teacher model
-model = TeacherModel()
-
-# Define your loss function and optimizer
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.SGD(model.parameters(), lr=0.001)
-
-# Training loop
-for epoch in range(num_epochs):
-    # Forward pass
-    outputs = model(inputs)
-    loss = criterion(outputs, labels)
-
-    # Backward and optimize
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-
-    # Print the loss for monitoring
-    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}")
+        

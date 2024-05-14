@@ -13,9 +13,9 @@ class StudentModel(torch.nn.Module):
         self.conv5 = torch.nn.Conv2d(512, 512, 1, 1, 0)
         self.conv6 = torch.nn.Conv2d(512, 512, 5, 1, 2)
 
-        self.fc1 = torch.nn.Conv2D(512, 512, 1, 1, 0)
-        self.fc2 = torch.nn.Conv2D(512, 512, 1, 1, 0)
-        self.fc2 = torch.nn.Linear(512, 3, 1, 1, 0)
+        self.fc1 = torch.nn.Conv2d(512, 512, 1, 1, 0)
+        self.fc2 = torch.nn.Conv2d(512, 512, 1, 1, 0)
+        self.fc2 = torch.nn.Conv2d(512, 3, 1, 1, 0)
     
         self.optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
         self.optimizer.zero_grad()
