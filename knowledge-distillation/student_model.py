@@ -103,8 +103,11 @@ class EncoderBlock(nn.Module):
         return output
 
 """ 
-Student Model: A Vision Transformer Network 
-
+Student Model: A Vision Transformer taken from Pytorch examples, 
+            here: https://github.com/pytorch/examples/blob/main/vision_transformer/main.py
+ 
+Model Architecture:
+ ##TODO ##
 """
 class StudentModel(torch.nn.Module):
     def __init__(self, args):
