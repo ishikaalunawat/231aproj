@@ -12,6 +12,8 @@ from enum import Enum
 import copy
 import argparse
 import os
+import torch
+import gc
 
 class InferenceParams():
     IMAGE_SIZE = 512
@@ -23,13 +25,6 @@ class InferenceParams():
 
 # Initialize teacher and student models
 # teacher = TeacherModel()
-student = StudentModel()
-
-# Define your training loop here
-def train():
-    # TODO: Implement your training loop
-    pass
-
 
 def get_args_parser():
     parser = argparse.ArgumentParser()
@@ -65,10 +60,19 @@ def main():
             schedule=InferenceParams.SCHEDULE, 
             lr=lr,
         )
-    breakpoint()
+        print(loss)
+        pts3D = scene.depth_to_pts3d()
+        del model  # Remove the teacher model from GPU memory
 
-    # Start training
-    train()
+        # Free up GPU memory
+        torch.cuda.empty_cache()
+        gc.collect()
+
+    # Use the predicted 3D points to start training
+    # breakpoint()
+    student = StudentModel().to(InferenceParams.DEVICE)
+    student.learn(torch.cat([im['img'] for im in imgs], dim=0).to(InferenceParams.DEVICE), pts3D)
+    torch.save(student.state_dict, "student_model.pth")
 
 if __name__ == "__main__":
     main()
