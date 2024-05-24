@@ -17,7 +17,7 @@ class StudentModel(torch.nn.Module):
         self.fc2 = torch.nn.Conv2d(512, 512, 1, 1, 0)
         self.fc3 = torch.nn.Conv2d(512, 3, 1, 1, 0)
     
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.0001)
         self.optimizer.zero_grad()
 
         self.loss = torch.nn.MSELoss()
@@ -35,12 +35,13 @@ class StudentModel(torch.nn.Module):
         x = self.fc3(x)
         return x
     
-    def learn(self, x, y, batch_size=8, epochs=100):
-        assert x.shape[0] == y.shape[0]
-        for _ in epochs:
-            y_pred = self.forward(x[: batch_size])
-            b, c, _, _ = y_pred.shape
-            y_pred = torch.transpose(y_pred.reshape(b, c, -1), 1, 2)
-            self.zero_grad()
-            self.loss(y_pred, y[: batch_size]).backward(retain_graph=True)
-            self.optimizer.step()
+    def learn(self, x, y):
+        y_pred = self.forward(x)
+        b, c, _, _ = y_pred.shape
+        y_pred = torch.transpose(y_pred.reshape(b, c, -1), 1, 2)        
+        self.zero_grad()
+        l = self.loss(y_pred, y)
+        loss_val = l.item()
+        l.backward(retain_graph=True)
+        self.optimizer.step()
+        return loss_val
