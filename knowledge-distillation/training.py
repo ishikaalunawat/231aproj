@@ -38,6 +38,8 @@ def get_args_parser():
     parser.add_argument("--weights_path", type=str)
     parser.add_argument("--dataset_path", type=str)
     parser.add_argument("--scene_type", type=str, default="apt1_kitchen", help="Scene type from 12Scenes dataset")
+    parser.add_argument("--num_train", type=int, default=5, help="Number of training images")
+    parser.add_argument("--num_test", type=int, default=3, help="Number of test images")
     return parser
 
 def teacher_inference(args):
@@ -45,11 +47,12 @@ def teacher_inference(args):
     # Load images from both train and test
     scene_dir_train = os.path.join(args.dataset_path, args.scene_type, "train", "rgb")
     scene_dir_test = os.path.join(args.dataset_path, args.scene_type, "test", "rgb")
-    filelist = [os.path.join(scene_dir_train, f) for f in os.listdir(scene_dir_train)]
-    filelist += [os.path.join(scene_dir_test, f) for f in os.listdir(scene_dir_test)]
+    num_train = args.num_train//2
+    filelist = [os.path.join(scene_dir_train, f) for f in os.listdir(scene_dir_train)][:num_train]
+    filelist += [os.path.join(scene_dir_test, f) for f in os.listdir(scene_dir_test)][:args.num_train-num_train]
     filelist = sorted(filelist, key=lambda x: os.path.basename(x).split('.')[0].split('-')[1])
 
-    imgs = load_images(filelist, size=InferenceParams.IMAGE_SIZE)
+    imgs = load_images(filelist, size=InferenceParams.IMAGE_SIZE, num_samples=args.num_train)
     if len(imgs) == 1:
         imgs = [imgs[0], copy.deepcopy(imgs[0])]
         imgs[1]['idx'] = 1
@@ -93,9 +96,10 @@ def create_dataset_labels(pts3D, args):
     """
     pts3d_dir_train = os.path.join(args.dataset_path, args.scene_type, "train", "pts3d")
     pts3d_dir_test = os.path.join(args.dataset_path, args.scene_type, "test", "pts3d")
-
-    rgb_dir_train = os.listdir(os.path.join(args.dataset_path, args.scene_type, "train", "rgb"))
-    rgb_dir_test = os.listdir(os.path.join(args.dataset_path, args.scene_type, "test", "rgb"))
+    
+    num_train = args.num_train//2
+    rgb_dir_train = os.listdir(os.path.join(args.dataset_path, args.scene_type, "train", "rgb"))[:num_train]
+    rgb_dir_test = os.listdir(os.path.join(args.dataset_path, args.scene_type, "test", "rgb"))[:args.num_train - num_train]
 
     # num_train, num_test = train_test_split(args)
 
@@ -139,7 +143,7 @@ if __name__ == "__main__":
     create_dataset_labels(pts3D, args)
 
     ## create dataset using 3D points predicted by above teacher model
-    train_dataloader = get_dataloader("datasets/12scenes_apt1_kitchen/train/", batch_size=4)
+    train_dataloader = get_dataloader("datasets/12scenes_apt1_kitchen/train/", num_samples = args.num_train, batch_size=4)
     student = StudentModel().to(InferenceParams.DEVICE)
 
     student_learn(student, train_dataloader, args.scene_type, epochs=10)

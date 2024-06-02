@@ -8,14 +8,19 @@ import numpy as np
 from dust3r.utils.image import load_images, rgb
 
 class RGBDDataset(Dataset):
-    def __init__(self, scene_dir, transform=False):
+    def __init__(self, scene_dir, num_samples, transform=False):
         self.scene_dir = scene_dir
+        self.num_samples = num_samples
         self.frames = self._load_frames()
 
     def _load_frames(self):
         frames = []
+        i = 0
         if os.path.isdir(self.scene_dir):
             for f in os.listdir(os.path.join(self.scene_dir, "rgb")):
+                if i>=self.num_samples:
+                    break
+                i+=1
                 if f.endswith(".color.jpg"):
                     frame_id = f.split(".")[0]
                     frames.append({
@@ -39,7 +44,7 @@ class RGBDDataset(Dataset):
 
         return rgb_image, scene_coordinate_image
 
-def get_dataloader(root_dir, batch_size=32, transform=False, shuffle=True):
-    dataset = RGBDDataset(root_dir, transform=True)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+def get_dataloader(root_dir, num_samples, batch_size=16, transform=False, shuffle=True):
+    dataset = RGBDDataset(root_dir, num_samples, transform=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2)
     return dataloader
