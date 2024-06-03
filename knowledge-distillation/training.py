@@ -12,12 +12,15 @@ from enum import Enum
 import copy
 import argparse
 import os
+import gc
 
 import torch
 import torch.nn as nn
 from torch import optim
 import numpy as np
 from torch.hub import tqdm
+
+from dataloader import get_dataloader
 
 class InferenceParams():
     IMAGE_SIZE = 512
@@ -46,7 +49,6 @@ Arguments:
     args - Other required arguments: [epochs, lr, device, weight_decay, dry_run]
 """
 def train(model, train_dataloader, val_dataloader, args):
-    # TODO: Implement your training loop
     
     #Parse the args
     epochs = args.epochs
@@ -57,7 +59,7 @@ def train(model, train_dataloader, val_dataloader, args):
 
     #Define Loss and Optimizer 
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=args.weight_decay)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.MSELoss()
 
     # Define Train Function for each epoch
     def train_fn(current_epoch):
@@ -154,43 +156,98 @@ def get_args_parser():
 
     return parser
 
+def teacher_inference(args):
+
+    # Load images from both train and test
+    scene_dir_train = os.path.join(args.dataset_path, args.scene_type, "train", "rgb")
+    scene_dir_test = os.path.join(args.dataset_path, args.scene_type, "test", "rgb")
+    num_train = args.num_train//2
+    filelist = [os.path.join(scene_dir_train, f) for f in os.listdir(scene_dir_train)][:num_train]
+    filelist += [os.path.join(scene_dir_test, f) for f in os.listdir(scene_dir_test)][:args.num_train-num_train]
+    filelist = sorted(filelist, key=lambda x: os.path.basename(x).split('.')[0].split('-')[1])
+
+    imgs = load_images(filelist, size=InferenceParams.IMAGE_SIZE, num_samples=args.num_train)
+    if len(imgs) == 1:
+        imgs = [imgs[0], copy.deepcopy(imgs[0])]
+        imgs[1]['idx'] = 1
+
+    # Teacher model teaches...
+    model = AsymmetricCroCo3DStereo.from_pretrained(args.weights_path).to(InferenceParams.DEVICE)
+    pairs = make_pairs(imgs, scene_graph=InferenceParams.SCENEGRAPH_TYPE, prefilter=None, symmetrize=True)
+    output = inference(pairs, model, InferenceParams.DEVICE, batch_size=InferenceParams.BATCH_SIZE, verbose=True)
+
+    mode = GlobalAlignerMode.PointCloudOptimizer if len(imgs) > 2 else GlobalAlignerMode.PairViewer
+    scene = global_aligner(output, device=InferenceParams.DEVICE, mode=mode, verbose=True)
+    lr = 0.0001
+
+    if mode == GlobalAlignerMode.PointCloudOptimizer:
+        loss = scene.compute_global_alignment(
+            init='mst', 
+            niter=InferenceParams.GLOBAL_ALIGNMENT_NITER, 
+            schedule=InferenceParams.SCHEDULE, 
+            lr=lr,
+        )
+        print(loss)
+        pts3D = scene.depth_to_pts3d()
+        del model  # Remove the teacher model from GPU memory
+
+        # Free up GPU memory
+        torch.cuda.empty_cache()
+        gc.collect()
+
+        pts_dict = {}
+        for i in range(len(filelist)):
+            frame_id = filelist[i].split(".")[0]
+            ind = int(frame_id.split('-')[1])
+            pts_dict[ind] = pts3D[i]
+
+        return pts_dict
+
+def create_dataset_labels(pts3D, args):
+    """
+    Create labels of 3D points for all images. These 3D points are the output of the teacher model
+    """
+    pts3d_dir_train = os.path.join(args.dataset_path, args.scene_type, "train", "pts3d")
+    pts3d_dir_test = os.path.join(args.dataset_path, args.scene_type, "test", "pts3d")
+    
+    num_train = args.num_train//2
+    rgb_dir_train = os.listdir(os.path.join(args.dataset_path, args.scene_type, "train", "rgb"))[:num_train]
+    rgb_dir_test = os.listdir(os.path.join(args.dataset_path, args.scene_type, "test", "rgb"))[:args.num_train - num_train]
+
+    # num_train, num_test = train_test_split(args)
+
+    if not os.path.exists(pts3d_dir_train):
+        os.mkdir(pts3d_dir_train)
+
+    if not os.path.exists(pts3d_dir_test):
+        os.mkdir(pts3d_dir_test)
+
+    for f in rgb_dir_train:
+        frame_id = f.split(".")[0]
+        ind = int(frame_id.split('-')[1])
+        torch.save(pts3D[ind], os.path.join(pts3d_dir_train, f"{frame_id}.pt"))
+
+    for f in rgb_dir_test:
+        frame_id = f.split(".")[0]
+        ind = int(frame_id.split('-')[1])
+        torch.save(pts3D[ind], os.path.join(pts3d_dir_test, f"{frame_id}.pt"))
+
 def main():
     parser = get_args_parser()
     args = parser.parse_args()
 
-    # # Load images
-    # filelist = [os.path.join(args.dataset_path, f) for f in os.listdir(args.dataset_path)]
-    # print(InferenceParams.IMAGE_SIZE)
-    # imgs = load_images(filelist, size=InferenceParams.IMAGE_SIZE)
-    # if len(imgs) == 1:
-    #     imgs = [imgs[0], copy.deepcopy(imgs[0])]
-    #     imgs[1]['idx'] = 1
+    pts3D = teacher_inference(args)
+    create_dataset_labels(pts3D, args)
 
-    # # Teacher model teaches...
-    # model = AsymmetricCroCo3DStereo.from_pretrained(args.weights_path).to(InferenceParams.DEVICE)
-    # pairs = make_pairs(imgs, scene_graph=InferenceParams.SCENEGRAPH_TYPE, prefilter=None, symmetrize=True)
-    # output = inference(pairs, model, InferenceParams.DEVICE, batch_size=InferenceParams.BATCH_SIZE, verbose=True)
-
-    # mode = GlobalAlignerMode.PointCloudOptimizer if len(imgs) > 2 else GlobalAlignerMode.PairViewer
-    # scene = global_aligner(output, device=InferenceParams.DEVICE, mode=mode, verbose=True)
-    # lr = 0.01
-
-    # if mode == GlobalAlignerMode.PointCloudOptimizer:
-    #     loss = scene.compute_global_alignment(
-    #         init='mst', 
-    #         niter=InferenceParams.GLOBAL_ALIGNMENT_NITER, 
-    #         schedule=InferenceParams.SCHEDULE, 
-    #         lr=lr,
-    #     )
-    # breakpoint()
-
+    ## create dataset using 3D points predicted by above teacher model
+    train_dataloader = get_dataloader("datasets/12scenes_apt1_kitchen/train/", num_samples = args.num_train, batch_size=4)
+    test_dataloader = get_dataloader("datasets/12scenes_apt1_kitchen/test/", batch_size=1)
     # Start training
     student = StudentModel(args).to(args.device)
 
-
     ### Call train function on student model ###
     ### Need Train and Val DataLoaders ###
-    train(model = student, args = args)
+    train(model = student, train_dataloader=train_dataloader, test_dataloader=test_dataloader, args = args)
 
 if __name__ == "__main__":
     main()

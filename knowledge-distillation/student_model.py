@@ -1,275 +1,154 @@
-# Create student model inheriting from torch.nn.Module
-
-import argparse
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
-import torchvision
-from torchvision.transforms import Compose, ToTensor, Resize
-from torch import optim
-import numpy as np
-from torch.hub import tqdm
+import torchvision.transforms as T
+from torch.utils.data import DataLoader, Dataset
+import torchvision.datasets as datasets
+import argparse
 
 class PatchExtractor(nn.Module):
     def __init__(self, patch_size=16):
         super().__init__()
         self.patch_size = patch_size
 
-    def forward(self, input_data):
-        batch_size, channels, height, width = input_data.size()
-        assert height % self.patch_size == 0 and width % self.patch_size == 0, \
-            f"Input height ({height}) and width ({width}) must be divisible by patch size ({self.patch_size})"
-
-        num_patches_h = height // self.patch_size
-        num_patches_w = width // self.patch_size
-        num_patches = num_patches_h * num_patches_w
-
-        patches = input_data.unfold(2, self.patch_size, self.patch_size). \
-            unfold(3, self.patch_size, self.patch_size). \
-            permute(0, 2, 3, 1, 4, 5). \
-            contiguous(). \
-            view(batch_size, num_patches, -1)
-
-        # Expected shape of a patch on default settings is (4, 196, 768)
-
+    def forward(self, x):
+        batch_size, channels, height, width = x.size()
+        patches = x.unfold(2, self.patch_size, self.patch_size).unfold(3, self.patch_size, self.patch_size)
+        patches = patches.permute(0, 2, 3, 1, 4, 5).contiguous()
+        patches = patches.view(batch_size, -1, channels * self.patch_size * self.patch_size)
         return patches
 
-
 class InputEmbedding(nn.Module):
-
     def __init__(self, args):
-        super(InputEmbedding, self).__init__()
+        super().__init__()
         self.patch_size = args.patch_size
         self.n_channels = args.n_channels
         self.latent_size = args.latent_size
-        use_cuda = not args.no_cuda and torch.cuda.is_available()
-        self.device = torch.device("cuda" if use_cuda else "cpu")
-        self.batch_size = args.batch_size
-        self.input_size = self.patch_size * self.patch_size * self.n_channels
 
-        # Linear projection
-        self.LinearProjection = nn.Linear(self.input_size, self.latent_size)
-        # Class token
-        self.class_token = nn.Parameter(torch.randn(self.batch_size, 1, self.latent_size).to(self.device))
-        # Positional embedding
-        self.pos_embedding = nn.Parameter(torch.randn(self.batch_size, 1, self.latent_size).to(self.device))
-
-    def forward(self, input_data):
-        input_data = input_data.to(self.device)
-        # Patchifying the Image
-        patchify = PatchExtractor(patch_size=self.patch_size)
-        patches = patchify(input_data)
-
-        linear_projection = self.LinearProjection(patches).to(self.device)
-        b, n, _ = linear_projection.shape
-
-        ## Added
-        class_tokens = self.class_token.expand(b, -1, -1)
+        self.linear_projection = nn.Linear(self.patch_size * self.patch_size * self.n_channels, self.latent_size)
+        self.cls_token = nn.Parameter(torch.randn(1, 1, self.latent_size))
+        self.pos_embedding = nn.Parameter(torch.randn(1, (args.img_size // self.patch_size) ** 2 + 1, self.latent_size))
         
-        linear_projection = torch.cat((class_tokens, linear_projection), dim=1)
-        pos_embed = self.pos_embedding[:, :n + 1, :]
-        linear_projection += pos_embed
-
-        return linear_projection
-
+    def forward(self, x):
+        patches = PatchExtractor(self.patch_size)(x)
+        batch_size = x.size(0)
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        x = torch.cat((cls_tokens, self.linear_projection(patches)), dim=1)
+        x += self.pos_embedding
+        return x
 
 class EncoderBlock(nn.Module):
-
-    def __init__(self, args):
-        super(EncoderBlock, self).__init__()
-
-        self.latent_size = args.latent_size
-        self.num_heads = args.num_heads
-        self.dropout = args.dropout
-        
-        # self.latent_size = latent_size
-        # self.num_heads = num_heads
-        # self.dropout = dropout
-
-        self.norm = nn.LayerNorm(self.latent_size)
-        self.attention = nn.MultiheadAttention(self.latent_size, self.num_heads, dropout=self.dropout)
-        self.enc_MLP = nn.Sequential(
-            nn.Linear(self.latent_size, self.latent_size * 4),
+    def __init__(self, latent_size, num_heads, mlp_ratio, dropout):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(latent_size)
+        self.attn = nn.MultiheadAttention(latent_size, num_heads, dropout=dropout)
+        self.norm2 = nn.LayerNorm(latent_size)
+        self.mlp = nn.Sequential(
+            nn.Linear(latent_size, latent_size * mlp_ratio),
             nn.GELU(),
-            nn.Dropout(self.dropout),
-            nn.Linear(self.latent_size * 4, self.latent_size),
-            nn.Dropout(self.dropout)
+            nn.Dropout(dropout),
+            nn.Linear(latent_size * mlp_ratio, latent_size),
+            nn.Dropout(dropout)
         )
+        
+    def forward(self, x):
+        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        x = x + self.mlp(self.norm2(x))
+        return x
 
-    def forward(self, emb_patches):
-        first_norm = self.norm(emb_patches)
-        attention_out = self.attention(first_norm, first_norm, first_norm)[0]
-        first_added = attention_out + emb_patches
-        second_norm = self.norm(first_added)
-        mlp_out = self.enc_MLP(second_norm)
-        output = mlp_out + first_added
-
-        return output
-
-""" 
-Student Model: A Vision Transformer taken from Pytorch examples, 
-            here: https://github.com/pytorch/examples/blob/main/vision_transformer/main.py
- 
-Model Architecture:
- ##TODO ##
-"""
-class StudentModel(torch.nn.Module):
+class VisionTransformer(nn.Module):
     def __init__(self, args):
-        super(StudentModel, self).__init__()
-
-        # Define a Vision Transformer Network
-        self.num_encoders = args.num_encoders
-        self.latent_size = args.latent_size
-        self.num_classes = args.num_classes
-        self.dropout = args.dropout
-
-        #Does it contain embedding?
-        self.embedding = InputEmbedding(args) if args.embedding else None
-
-        # Encoder Stack
-        self.encoders = nn.ModuleList([EncoderBlock(args) for _ in range(self.num_encoders)])
-
-        self.ConvHead = nn.Sequential(
-            nn.Conv2d(self.latent_size, 512, 1, 1, 0),
+        super().__init__()
+        self.embedding = InputEmbedding(args)
+        self.encoder = nn.Sequential(
+            *[EncoderBlock(args.latent_size, args.num_heads, 4, args.dropout) for _ in range(args.num_encoders)]
+        )
+        self.conv_head = nn.Sequential(
+            nn.Conv2d(args.latent_size, 512, kernel_size=1),
             nn.ReLU(),
-            nn.Conv2d(512, 512, 1, 1, 0),
+            nn.Conv2d(512, 512, kernel_size=1),
             nn.ReLU(),
-            nn.Conv2d(512, 3, 1, 1, 0)
+            nn.Conv2d(512, 3, kernel_size=1)
         )
 
-
-        self.MLPHead = nn.Sequential(
-            nn.LayerNorm(self.latent_size),
-            nn.Linear(self.latent_size, self.latent_size),
-            nn.Linear(self.latent_size, self.num_classes),
-        )
+    def forward(self, x):
+        batch_size, channels, height, width = x.size()
+        x = self.embedding(x)
+        x = self.encoder(x)
         
-        ##Criterion is CrossEntropyLoss, optimizer is Adam
-        #self.optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
-
-    def forward(self, test_input):
-        enc_output = self.embedding(test_input)
-        for enc_layer in self.encoders:
-            enc_output = enc_layer(enc_output)
-
+        # Remove cls token and reshape
+        x = x[:, 1:, :]
+        h_patches, w_patches = height // self.embedding.patch_size, width // self.embedding.patch_size
+        x = x.permute(0, 2, 1).contiguous().view(batch_size, -1, h_patches, w_patches)
         
-        enc_output = enc_output[:, 1:, :]  # Remove class token
-        B, N, C = enc_output.shape
-        H = W = int(N ** 0.5)  # Assumes square patches
-
-        enc_output = enc_output.permute(0, 2, 1).contiguous().view(B, C, H, W)
-        output = self.conv_head(enc_output)
-
-        return output
-        # class_token_embed = enc_output[:, 0]
-        # return self.MLPHead(class_token_embed)
-    
-
-
-# class TrainEval:
-
-#     def __init__(self, args, model, train_dataloader, val_dataloader, optimizer, criterion, device):
-#         self.model = model
-#         self.train_dataloader = train_dataloader
-#         self.val_dataloader = val_dataloader
-#         self.optimizer = optimizer
-#         self.criterion = criterion
-#         self.epoch = args.epochs
-#         self.device = device
-#         self.args = args
-
-#     def train_fn(self, current_epoch):
-#         return total_loss / len(self.train_dataloader)
-
-#     def eval_fn(self, current_epoch):
-#         return total_loss / len(self.val_dataloader)
-
-#     def train(self):
-#         best_valid_loss = np.inf
-#         best_train_loss = np.inf
-#         for i in range(self.epoch):
-#             train_loss = self.train_fn(i)
-#             val_loss = self.eval_fn(i)
-
-#             if val_loss < best_valid_loss:
-#                 torch.save(self.model.state_dict(), "best-weights.pt")
-#                 print("Saved Best Weights")
-#                 best_valid_loss = val_loss
-#                 best_train_loss = train_loss
-#         print(f"Training Loss : {best_train_loss}")
-#         print(f"Valid Loss : {best_valid_loss}")
-
-#     '''
-#         On default settings:
+        # Upsample back to the original image size
+        x = nn.functional.interpolate(x, size=(height, width), mode='bilinear', align_corners=False)
+        x = self.conv_head(x)
         
-#         Training Loss : 2.3081023390197752
-#         Valid Loss : 2.302861615943909
-        
-#         However, this score is not competitive compared to the 
-#         high results in the original paper, which were achieved 
-#         through pre-training on JFT-300M dataset, then fine-tuning 
-#         it on the target dataset. To improve the model quality 
-#         without pre-training, we could try training for more epochs, 
-#         using more Transformer layers, resizing images or changing 
-#         patch size,
-#     '''
+        # Reshape to (B, N, 3)
+        x = x.permute(0, 2, 3, 1).contiguous().view(batch_size, -1, 3)
+        return x
 
-
-""" Main Function to test student model
-    Takes in arguments and builds training and test data from CIFAR10 dataset
-    If want to test using the train eval class, please uncomment the class above 
-    and the last line in the main function below
-"""
 def main():
     parser = argparse.ArgumentParser(description='Vision Transformer in PyTorch')
-    parser.add_argument('--no-cuda', action='store_true', default=False,
-                        help='disables CUDA training')
-    parser.add_argument('--patch-size', type=int, default=16,
-                        help='patch size for images (default : 16)')
-    parser.add_argument('--latent-size', type=int, default=768,
-                        help='latent size (default : 768)')
-    parser.add_argument('--n-channels', type=int, default=3,
-                        help='number of channels in images (default : 3 for RGB)')
-    parser.add_argument('--num-heads', type=int, default=12,
-                        help='(default : 12)')
-    parser.add_argument('--num-encoders', type=int, default=12,
-                        help='number of encoders (default : 12)')
-    parser.add_argument('--dropout', type=int, default=0.1,
-                        help='dropout value (default : 0.1)')
-    parser.add_argument('--img-size', type=int, default=224,
-                        help='image size to be reshaped to (default : 224')
-    parser.add_argument('--num-classes', type=int, default=10,
-                        help='number of classes in dataset (default : 10 for CIFAR10)')
-    parser.add_argument('--epochs', type=int, default=10,
-                        help='number of epochs (default : 10)')
-    parser.add_argument('--lr', type=float, default=1e-2,
-                        help='base learning rate (default : 0.01)')
-    parser.add_argument('--weight-decay', type=int, default=3e-2,
-                        help='weight decay value (default : 0.03)')
-    parser.add_argument('--batch-size', type=int, default=4,
-                        help='batch size (default : 4)')
-    parser.add_argument('--dry-run', action='store_true', default=False,
-                        help='quickly check a single pass')
+    parser.add_argument('--no-cuda', action='store_true', default=False, help='disables CUDA training')
+    parser.add_argument('--patch-size', type=int, default=16, help='patch size for images (default : 16)')
+    parser.add_argument('--latent-size', type=int, default=256, help='latent size (default : 256)')
+    parser.add_argument('--n-channels', type=int, default=3, help='number of channels in images (default : 3 for RGB)')
+    parser.add_argument('--num-heads', type=int, default=12, help='(default : 12)')
+    parser.add_argument('--num-encoders', type=int, default=12, help='number of encoders (default : 12)')
+    parser.add_argument('--dropout', type=float, default=0.1, help='dropout value (default : 0.1)')
+    parser.add_argument('--img-size', type=int, default=224, help='image size to be reshaped to (default : 224)')
+    parser.add_argument('--batch-size', type=int, default=4, help='batch size (default : 4)')
+    parser.add_argument('--epochs', type=int, default=10, help='number of epochs (default : 10)')
+    parser.add_argument('--lr', type=float, default=1e-2, help='base learning rate (default : 0.01)')
+    parser.add_argument('--weight-decay', type=float, default=3e-2, help='weight decay value (default : 0.03)')
+    parser.add_argument('--dry-run', action='store_true', default=False, help='quickly check a single pass')
     args = parser.parse_args()
 
     use_cuda = not args.no_cuda and torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
 
-    transforms = Compose([
-        Resize((args.img_size, args.img_size)),
-        ToTensor()
+    transform = T.Compose([
+        T.Resize((args.img_size, args.img_size)),
+        T.ToTensor()
     ])
-    train_data = torchvision.datasets.CIFAR10(root='./dataset', train=True, download=True, transform=transforms)
-    valid_data = torchvision.datasets.CIFAR10(root='./dataset', train=False, download=True, transform=transforms)
+    
+    train_data = datasets.CIFAR10(root='./dataset', train=True, download=True, transform=transform)
+    valid_data = datasets.CIFAR10(root='./dataset', train=False, download=True, transform=transform)
+    
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
     valid_loader = DataLoader(valid_data, batch_size=args.batch_size, shuffle=True)
 
-    model = StudentModel(args).to(device)
+    model = VisionTransformer(args).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    criterion = nn.MSELoss()  # Change this based on your specific task requirements
 
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    criterion = nn.CrossEntropyLoss()
-    
-    # TrainEval(args, model, train_loader, valid_loader, optimizer, criterion, device).train()
+    # Training loop
+    for epoch in range(args.epochs):
+        model.train()
+        total_loss = 0.0
+        for inputs, _ in train_loader:
+            inputs = inputs.to(device)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            # Placeholder for 3D points labels; replace with actual labels
+            labels = torch.randn_like(outputs).to(device)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        print(f'Epoch {epoch + 1}, Loss: {total_loss / len(train_loader)}')
+
+        model.eval()
+        total_loss = 0.0
+        with torch.no_grad():
+            for inputs, _ in valid_loader:
+                inputs = inputs.to(device)
+                outputs = model(inputs)
+                labels = torch.randn_like(outputs).to(device)
+                loss = criterion(outputs, labels)
+                total_loss += loss.item()
+        print(f'Validation Loss: {total_loss / len(valid_loader)}')
 
 if __name__ == "__main__":
-    main()
+    # main()
