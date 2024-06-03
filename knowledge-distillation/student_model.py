@@ -62,7 +62,11 @@ class InputEmbedding(nn.Module):
 
         linear_projection = self.LinearProjection(patches).to(self.device)
         b, n, _ = linear_projection.shape
-        linear_projection = torch.cat((self.class_token, linear_projection), dim=1)
+
+        ## Added
+        class_tokens = self.class_token.expand(b, -1, -1)
+        
+        linear_projection = torch.cat((class_tokens, linear_projection), dim=1)
         pos_embed = self.pos_embedding[:, :n + 1, :]
         linear_projection += pos_embed
 
@@ -125,6 +129,15 @@ class StudentModel(torch.nn.Module):
         # Encoder Stack
         self.encoders = nn.ModuleList([EncoderBlock(args) for _ in range(self.num_encoders)])
 
+        self.ConvHead = nn.Sequential(
+            nn.Conv2d(self.latent_size, 512, 1, 1, 0),
+            nn.ReLU(),
+            nn.Conv2d(512, 512, 1, 1, 0),
+            nn.ReLU(),
+            nn.Conv2d(512, 3, 1, 1, 0)
+        )
+
+
         self.MLPHead = nn.Sequential(
             nn.LayerNorm(self.latent_size),
             nn.Linear(self.latent_size, self.latent_size),
@@ -139,8 +152,17 @@ class StudentModel(torch.nn.Module):
         for enc_layer in self.encoders:
             enc_output = enc_layer(enc_output)
 
-        class_token_embed = enc_output[:, 0]
-        return self.MLPHead(class_token_embed)
+        
+        enc_output = enc_output[:, 1:, :]  # Remove class token
+        B, N, C = enc_output.shape
+        H = W = int(N ** 0.5)  # Assumes square patches
+
+        enc_output = enc_output.permute(0, 2, 1).contiguous().view(B, C, H, W)
+        output = self.conv_head(enc_output)
+
+        return output
+        # class_token_embed = enc_output[:, 0]
+        # return self.MLPHead(class_token_embed)
     
 
 
