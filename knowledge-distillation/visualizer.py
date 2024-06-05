@@ -1,8 +1,9 @@
 import numpy as np
 import open3d as o3d
+o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
 import torch
 
-def student_inference(model, dataloader, device="cuda"):
+def student_inference(model, dataloader, voxel_size = 0.02, device="cuda"):
     pcds = []
     model = model.to(device)
     with torch.no_grad():
@@ -15,8 +16,11 @@ def student_inference(model, dataloader, device="cuda"):
 
             # Reshape and concatenate the point clouds from each frame
             point_cloud = torch.transpose(output.reshape(output.shape[1], -1), 0, 1)
-            pcds.append(o3d.geometry.PointCloud \
-                        (o3d.utility.Vector3dVector(point_cloud.cpu().numpy())))
+            pointcloud = o3d.geometry.PointCloud \
+                        (o3d.utility.Vector3dVector(point_cloud.cpu().numpy()))
+            pointcloud = pointcloud.voxel_down_sample(voxel_size=voxel_size)
+
+            pcds.append(pointcloud)
 
     return pcds
 
@@ -74,14 +78,14 @@ def optimize_pose_graph(pcds, voxel_size):
     max_correspondence_distance_coarse = voxel_size * 15
     max_correspondence_distance_fine = voxel_size * 1.5
     
-    print("Optimizing PoseGraph ...")
+    print("Full registration ...")
     with o3d.utility.VerbosityContextManager(
             o3d.utility.VerbosityLevel.Debug) as cm:
         pose_graph = full_registration(pcds,
                                     max_correspondence_distance_coarse,
                                     max_correspondence_distance_fine)
 
-
+    print("Optimizing PoseGraph ...")
     option = o3d.pipelines.registration.GlobalOptimizationOption(max_correspondence_distance=max_correspondence_distance_fine,
                                                                 edge_prune_threshold=0.25,
                                                                 reference_node=0)

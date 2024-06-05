@@ -35,9 +35,10 @@ class InferenceParams():
 
 def get_args_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--weights_path", type=str)
+    parser.add_argument("--weights_path", type=str, default="naver/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth")
     parser.add_argument("--dataset_path", type=str, default="datasets")
-    parser.add_argument("--scene_type", type=str, default="apt1_kitchen", help="Scene type from 12Scenes dataset")
+    parser.add_argument("--scene_type", type=str, default="12scenes_office2_5a_trial", help="Scene type from 12Scenes dataset")
+    parser.add_argument("--get_gts", action="store_true", help="Get ground truth 3D points")
     return parser
 
 def teacher_inference(args):
@@ -104,17 +105,16 @@ def create_dataset_labels(pts3D, args):
 
     if not os.path.exists(pts3d_dir_test):
         os.mkdir(pts3d_dir_test)
-    import pdb; pdb.set_trace()
+
     for f in rgb_dir_train:
         frame_id = f.split(".")[0]
         ind = int(frame_id.split('-')[1])
         torch.save(pts3D[ind], os.path.join(pts3d_dir_train, f"{frame_id}.pt"))
-    pdb.set_trace()
+
     for f in rgb_dir_test:
         frame_id = f.split(".")[0]
         ind = int(frame_id.split('-')[1])
         torch.save(pts3D[ind], os.path.join(pts3d_dir_test, f"{frame_id}.pt"))
-    pdb.set_trace()
 
 def student_learn(student, dataloader, scene_type, epochs):
     # Use the predicted 3D points to start training
@@ -139,6 +139,9 @@ if __name__ == "__main__":
     pts3D = teacher_inference(args)
     create_dataset_labels(pts3D, args)
 
+    if args.get_gts:
+        print("Completed generating DUst3r ground truths")
+        exit()
     ## create dataset using 3D points predicted by above teacher model
     train_dataloader = get_dataloader(args.dataset_path, args.scene_type, "train", batch_size=4)
     student = StudentModel().to(InferenceParams.DEVICE)

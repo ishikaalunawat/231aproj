@@ -14,7 +14,7 @@ src_folder = '12scenes_source'
 mkdir(src_folder)
 os.chdir(src_folder)
 
-for ds in ['office1']:
+for ds in ['office2']:
 
 	print("=== Downloading 12scenes Data:", ds, "===============================")
 
