@@ -123,6 +123,7 @@ def student_learn(student, dataloader, scene_type, epochs):
     for e in range(epochs):
         i = 0
         for image, label in dataloader:
+            torch.cuda.empty_cache()
             i += 1
             loss = student.learn(image, label)
             log_message = f"Epoch: {e}, Iteration: {i}, Loss: {loss}"
