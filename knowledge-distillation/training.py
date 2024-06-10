@@ -27,7 +27,7 @@ class InferenceParams():
     SCENEGRAPH_TYPE = "complete"
     DEVICE = "cuda"
     BATCH_SIZE = 8
-    GLOBAL_ALIGNMENT_NITER = 300
+    GLOBAL_ALIGNMENT_NITER = 100
     SCHEDULE = "linear"
 
 # Initialize teacher and student models
@@ -60,6 +60,7 @@ def teacher_inference(args):
     pairs = make_pairs(imgs, scene_graph=InferenceParams.SCENEGRAPH_TYPE, prefilter=None, symmetrize=True)
     output = inference(pairs, model, InferenceParams.DEVICE, batch_size=InferenceParams.BATCH_SIZE, verbose=True)
 
+    torch.cuda.empty_cache()
     mode = GlobalAlignerMode.PointCloudOptimizer if len(imgs) > 2 else GlobalAlignerMode.PairViewer
     scene = global_aligner(output, device=InferenceParams.DEVICE, mode=mode, verbose=True)
     lr = 0.0001
@@ -115,6 +116,7 @@ def create_dataset_labels(pts3D, args):
         frame_id = f.split(".")[0]
         ind = int(frame_id.split('-')[1])
         torch.save(pts3D[ind], os.path.join(pts3d_dir_test, f"{frame_id}.pt"))
+    
 
 def student_learn(student, dataloader, scene_type, epochs):
     # Use the predicted 3D points to start training

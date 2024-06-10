@@ -8,7 +8,7 @@ def student_inference(model, dataloader, voxel_size = 0.02, device="cuda"):
     model = model.to(device)
     with torch.no_grad():
         model.eval()
-        for image, label in dataloader:
+        for image in dataloader:
             # Assuming the batch is a tuple of (inputs, targets)
             inputs = image.to(device)
             output = model(inputs)
@@ -97,7 +97,7 @@ def optimize_pose_graph(pcds, voxel_size):
     return pose_graph
 
 
-def visualize_point_cloud(pcds, voxel_size = 0.02):
+def visualize_point_cloud(pcds, voxel_size = 0.001):
     # Combine PCD and return
     pcd_combined = o3d.geometry.PointCloud()
     pose_graph = optimize_pose_graph(pcds, voxel_size)
