@@ -16,9 +16,9 @@ def student_inference(model, dataloader, voxel_size = 0.02, device="cuda"):
 
             # Reshape and concatenate the point clouds from each frame
             pointcloud = torch.transpose(output.reshape(output.shape[1], -1), 0, 1)
-            # pointcloud = o3d.geometry.PointCloud \
-            #             (o3d.utility.Vector3dVector(pointcloud.cpu().numpy()))
-            # pointcloud = pointcloud.voxel_down_sample(voxel_size=voxel_size)
+            pointcloud = o3d.geometry.PointCloud \
+                        (o3d.utility.Vector3dVector(pointcloud.cpu().numpy()))
+            pointcloud = pointcloud.voxel_down_sample(voxel_size=voxel_size)
 
             pcds.append(pointcloud)
 
