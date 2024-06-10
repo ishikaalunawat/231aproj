@@ -1,7 +1,7 @@
 import sys
 sys.path.append("dust3r/")
 
-from student_model import StudentModel
+from student_model import StudentModel, StudentModelPretrained
 from dust3r.model import AsymmetricCroCo3DStereo
 from dust3r.inference import inference
 from dust3r.utils.image import load_images, rgb
@@ -20,7 +20,6 @@ import gc
 
 import logging
 
-logging.basicConfig(filename='app.log', filemode='w', format='%(levelname)s - %(message)s')
 
 class InferenceParams():
     IMAGE_SIZE = 512
@@ -35,6 +34,7 @@ class InferenceParams():
 
 def get_args_parser():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model_type", type=str)
     parser.add_argument("--weights_path", type=str)
     parser.add_argument("--dataset_path", type=str)
     parser.add_argument("--scene_type", type=str, default="apt1_kitchen", help="Scene type from 12Scenes dataset")
@@ -116,39 +116,81 @@ def create_dataset_labels(pts3D, args):
         torch.save(pts3D[ind], os.path.join(pts3d_dir_test, f"{frame_id}.pt"))
 
 
-def student_learn(student, dataloader, scene_type, epochs):
+def student_learn(student, dataloader, model_type, scene_type, logger, epochs):
     # Use the predicted 3D points to start training
     # breakpoint()
     # student.learn(torch.cat([im['img'] for im in imgs], dim=0).to(InferenceParams.DEVICE), pts3D)
+
+    if not os.path.exists("student_models"):
+        os.mkdir("student_models")
+    
+    best_loss = float("Inf")
     for e in range(epochs):
         i = 0
         for image, label in dataloader:
             i += 1
             loss = student.learn(image, label)
             log_message = f"Epoch: {e}, Iteration: {i}, Loss: {loss}"
-            logging.info(log_message)
+            logger.info(log_message)
+            if loss < best_loss:
+                torch.save(student.state_dict(), "student_models/{}/{}.pth".format(model_type, scene_type))
+                best_loss = loss
 
-    torch.save(student.state_dict(), "student_models/scene_{}.pth".format(scene_type))
+
+def create_logger(args):
+    train_logger = logging.getLogger('train_logger')
+    test_logger = logging.getLogger('test_logger')
+
+    train_logger.setLevel(logging.DEBUG)  # Set the logger level to DEBUG
+    test_logger.setLevel(logging.DEBUG)
+
+    if not os.path.exists(f'logging/{args.model_type}/{args.scene_type}'):
+        os.mkdir(f'logging/{args.model_type}/{args.scene_type}')
+
+    train_file_handler = logging.FileHandler(f'logging/{args.model_type}/{args.scene_type}/train.log', mode='w')
+    train_file_handler.setLevel(logging.DEBUG)  # Set the file handler level to DEBUG
+    test_file_handler = logging.FileHandler(f'logging/{args.model_type}/{args.scene_type}/test.log', mode='w')
+    test_file_handler.setLevel(logging.DEBUG)  # Set the file handler level to DEBUG
+
+    # Create a formatter and set it for both handlers
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    train_file_handler.setFormatter(formatter)
+    test_file_handler.setFormatter(formatter)
+    
+    # Add the handlers to the loggers
+    train_logger.addHandler(train_file_handler)
+    test_logger.addHandler(test_file_handler)
+
+    return train_logger, test_logger
 
 if __name__ == "__main__":
 
     parser = get_args_parser()
     args = parser.parse_args()
+    train_logger, test_logger = create_logger(args)
 
     pts3D = teacher_inference(args)
     create_dataset_labels(pts3D, args)
 
     ## create dataset using 3D points predicted by above teacher model
-    train_dataloader = get_dataloader("datasets/12scenes_apt1_kitchen/train/", batch_size=4)
-    student = StudentModel().to(InferenceParams.DEVICE)
+    train_dir = os.path.join(args.dataset_path, args.scene_type, "train")
+    train_dataloader = get_dataloader(train_dir, batch_size=4)
+    if args.model_type == 'conv_pretrained':
+        student = StudentModelPretrained().to(InferenceParams.DEVICE)
+        student.load_state_dict(torch.load("student_models/{}/{}.pth".format(args.model_type, args.scene_type)))
+    else:
+        student = StudentModel().to(InferenceParams.DEVICE)
 
-    student_learn(student, train_dataloader, args.scene_type, epochs=10)
+    student_learn(student, train_dataloader, args.model_type, args.scene_type, train_logger, epochs=300)
 
     ## Eval
-    test_dataloader = get_dataloader("datasets/12scenes_apt1_kitchen/test/", batch_size=1)
+    test_dir = os.path.join(args.dataset_path, args.scene_type, "test")
+    test_dataloader = get_dataloader(test_dir, batch_size=1)
     for image, label in test_dataloader:
         pred = student(image)
         b, c, _, _ = pred.shape
-        pred = torch.transpose(pred.reshape(b, c, -1), 1, 2)        
+        pred = torch.transpose(pred.reshape(b, c, -1), 1, 2)
         l2_error = F.mse_loss(pred, label)
         print(l2_error)
+        msg = f"Test image - L2 Error: {l2_error}"
+        test_logger.info(msg)
