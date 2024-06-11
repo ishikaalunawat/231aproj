@@ -1,45 +1,101 @@
-# Create student model inheriting from torch.nn.Module
-
 import torch
+import torch.nn as nn
 
-class StudentModel(torch.nn.Module):
-    def __init__(self):
-        super(StudentModel, self).__init__()
-        # Define a Fully Convolutional Network layer
-        self.conv1 = torch.nn.Conv2d(3, 64, 5, 1, 2)
-        self.conv2 = torch.nn.Conv2d(64, 128, 5, 1, 2)
-        self.conv3 = torch.nn.Conv2d(128, 256, 5, 1, 2)
-        self.conv4 = torch.nn.Conv2d(256, 512, 5, 1, 2)
-        self.conv5 = torch.nn.Conv2d(512, 512, 1, 1, 0)
-        self.conv6 = torch.nn.Conv2d(512, 512, 5, 1, 2)
-
-        self.fc1 = torch.nn.Conv2d(512, 512, 1, 1, 0)
-        self.fc2 = torch.nn.Conv2d(512, 512, 1, 1, 0)
-        self.fc3 = torch.nn.Conv2d(512, 3, 1, 1, 0)
-    
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.0001)
-        self.optimizer.zero_grad()
-
-        self.loss = torch.nn.MSELoss()
+class PatchExtractor(nn.Module):
+    def __init__(self, patch_size=16):
+        super().__init__()
+        self.patch_size = patch_size
 
     def forward(self, x):
-        x = torch.relu(self.conv1(x))
-        x = torch.relu(self.conv2(x))
-        x = torch.relu(self.conv3(x))
-        x = torch.relu(self.conv4(x))
-        x = torch.relu(self.conv5(x))
-        x = torch.relu(self.conv6(x))
+        batch_size, channels, height, width = x.size()
+        patches = x.unfold(2, self.patch_size, self.patch_size).unfold(3, self.patch_size, self.patch_size)
+        patches = patches.permute(0, 2, 3, 1, 4, 5).contiguous()
+        patches = patches.view(batch_size, -1, channels * self.patch_size * self.patch_size)
+        return patches
 
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = self.fc3(x)
+class InputEmbedding(nn.Module):
+    def __init__(self, patch_size, n_channels, latent_size, img_height=368, img_width=512):
+        super().__init__()
+        self.patch_size = patch_size
+        self.n_channels = n_channels
+        self.latent_size = latent_size
+
+        self.linear_projection = nn.Linear(self.patch_size * self.patch_size * self.n_channels, self.latent_size)
+        self.cls_token = nn.Parameter(torch.randn(1, 1, self.latent_size))
+        num_patches = (img_height // self.patch_size) * (img_width // self.patch_size)
+        self.pos_embedding = nn.Parameter(torch.randn(1, num_patches + 1, self.latent_size))
+
+    def forward(self, x):
+        patches = PatchExtractor(self.patch_size)(x)
+        batch_size = x.size(0)
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        x = torch.cat((cls_tokens, self.linear_projection(patches)), dim=1)
+        x += self.pos_embedding
         return x
-    
+
+class EncoderBlock(nn.Module):
+    def __init__(self, latent_size, num_heads, mlp_ratio, dropout):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(latent_size)
+        self.attn = nn.MultiheadAttention(latent_size, num_heads, dropout=dropout)
+        self.norm2 = nn.LayerNorm(latent_size)
+        self.mlp = nn.Sequential(
+            nn.Linear(latent_size, latent_size * mlp_ratio),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(latent_size * mlp_ratio, latent_size),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+class StudentModel(nn.Module):
+    def __init__(self, patch_size, n_channels, latent_size, num_heads, num_encoders, dropout, img_height=368, img_width=512):
+        super().__init__()
+        self.embedding = InputEmbedding(patch_size, n_channels, latent_size, img_height, img_width)
+        self.encoder = nn.Sequential(
+            *[EncoderBlock(latent_size, num_heads, 4, dropout) for _ in range(num_encoders)]
+        )
+        self.conv_head = nn.Sequential(
+            nn.Conv2d(latent_size, 512, kernel_size=1),
+            nn.LeakyReLU(),
+            nn.Conv2d(512, 512, kernel_size=1),
+            nn.LeakyReLU(),
+            nn.Conv2d(512, 512, kernel_size=1),
+            nn.LeakyReLU(),
+            nn.Conv2d(512, 3, kernel_size=1)
+        )
+        self.patch_size = patch_size
+        self.loss = nn.MSELoss()
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.00025)
+        self.optimizer.zero_grad()
+        self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.9)
+
+    def forward(self, x):
+        batch_size, channels, height, width = x.size()
+        x = self.embedding(x)
+        x = self.encoder(x)
+
+        # Remove cls token and reshape
+        x = x[:, 1:, :]
+        h_patches, w_patches = height // self.patch_size, width // self.patch_size
+        x = x.permute(0, 2, 1).contiguous().view(batch_size, -1, h_patches, w_patches)
+
+        # Upsample back to the original image size
+        x = nn.functional.interpolate(x, size=(height, width), mode='bilinear', align_corners=False)
+        x = self.conv_head(x)
+
+        # Reshape to (B, N, 3)
+        x = x.permute(0, 2, 3, 1).contiguous().view(batch_size, -1, 3)
+        return x
+
     def learn(self, x, y):
         y_pred = self.forward(x)
-        b, c, _, _ = y_pred.shape
-        y_pred = torch.transpose(y_pred.reshape(b, c, -1), 1, 2)        
-        self.zero_grad()
+        # b, c, _, _ = y_pred.shape
+        self.optimizer.zero_grad()
         l = self.loss(y_pred, y)
         loss_val = l.item()
         l.backward(retain_graph=True)

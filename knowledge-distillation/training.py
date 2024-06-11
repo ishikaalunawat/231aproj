@@ -10,6 +10,8 @@ from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
 from dataloader import get_dataloader
 
 import torch.nn.functional as F
+import torch.nn as nn
+import numpy as np
 
 from enum import Enum
 import copy
@@ -25,7 +27,8 @@ logging.basicConfig(filename='app.log', filemode='w', format='%(levelname)s - %(
 class InferenceParams():
     IMAGE_SIZE = 512
     SCENEGRAPH_TYPE = "complete"
-    DEVICE = "cuda"
+    DEVICE = "cuda:0"
+    DEVICE_ALT = "cuda:1"
     BATCH_SIZE = 8
     GLOBAL_ALIGNMENT_NITER = 100
     SCHEDULE = "linear"
@@ -37,7 +40,7 @@ def get_args_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--weights_path", type=str, default="naver/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth")
     parser.add_argument("--dataset_path", type=str, default="datasets")
-    parser.add_argument("--scene_type", type=str, default="12scenes_office2_5a_trial", help="Scene type from 12Scenes dataset")
+    parser.add_argument("--scene_type", type=str, default="scene_1", help="Scene type from 12Scenes dataset")
     parser.add_argument("--get_gts", action="store_true", help="Get ground truth 3D points")
     return parser
 
@@ -56,13 +59,16 @@ def teacher_inference(args):
         imgs[1]['idx'] = 1
 
     # Teacher model teaches...
-    model = AsymmetricCroCo3DStereo.from_pretrained(args.weights_path).to(InferenceParams.DEVICE)
+    model = AsymmetricCroCo3DStereo.from_pretrained(args.weights_path)
+    # model = nn.DataParallel(model)
+    model = model.to(InferenceParams.DEVICE)
     pairs = make_pairs(imgs, scene_graph=InferenceParams.SCENEGRAPH_TYPE, prefilter=None, symmetrize=True)
     output = inference(pairs, model, InferenceParams.DEVICE, batch_size=InferenceParams.BATCH_SIZE, verbose=True)
 
     torch.cuda.empty_cache()
+    gc.collect()
     mode = GlobalAlignerMode.PointCloudOptimizer if len(imgs) > 2 else GlobalAlignerMode.PairViewer
-    scene = global_aligner(output, device=InferenceParams.DEVICE, mode=mode, verbose=True)
+    scene = global_aligner(output, device=InferenceParams.DEVICE_ALT, mode=mode, verbose=True)
     lr = 0.0001
 
     if mode == GlobalAlignerMode.PointCloudOptimizer:
@@ -116,7 +122,7 @@ def create_dataset_labels(pts3D, args):
         frame_id = f.split(".")[0]
         ind = int(frame_id.split('-')[1])
         torch.save(pts3D[ind], os.path.join(pts3d_dir_test, f"{frame_id}.pt"))
-    
+    torch.cuda.empty_cache()
 
 def student_learn(student, dataloader, scene_type, epochs):
     # Use the predicted 3D points to start training
@@ -124,37 +130,58 @@ def student_learn(student, dataloader, scene_type, epochs):
     # student.learn(torch.cat([im['img'] for im in imgs], dim=0).to(InferenceParams.DEVICE), pts3D)
     for e in range(epochs):
         i = 0
+        loss = 0.0
         for image, label in dataloader:
+            image, label = image.to(InferenceParams.DEVICE), label.to(InferenceParams.DEVICE)
+            # label = torch.multiply(label, 10.0)
             torch.cuda.empty_cache()
             i += 1
-            loss = student.learn(image, label)
-            log_message = f"Epoch: {e}, Iteration: {i}, Loss: {loss}"
-            logging.info(log_message)
+            loss += student.module.learn(image, label)
+        log_message = f"Epoch: {e} Avg. Loss: {np.mean(loss)}"
+        print(log_message)
+        logging.info(log_message)
+        student.module.scheduler.step()
 
-    torch.save(student.state_dict(), "student_models/scene_{}.pth".format(scene_type))
+    torch.save(student.module.state_dict(), "student_models/vit/{}.pth".format(scene_type))
 
 if __name__ == "__main__":
 
     parser = get_args_parser()
     args = parser.parse_args()
 
-    pts3D = teacher_inference(args)
-    create_dataset_labels(pts3D, args)
-
     if args.get_gts:
+        pts3D = teacher_inference(args)
+        create_dataset_labels(pts3D, args)
         print("Completed generating DUst3r ground truths")
         exit()
     ## create dataset using 3D points predicted by above teacher model
-    train_dataloader = get_dataloader(args.dataset_path, args.scene_type, "train", batch_size=4)
-    student = StudentModel().to(InferenceParams.DEVICE)
+    else:
+        train_dataloader = get_dataloader(args.dataset_path, args.scene_type, "train", batch_size=4)
 
-    student_learn(student, train_dataloader, args.scene_type, epochs=10)
+        ## STUDENT PARAMS
+        patch_size = 16
+        latent_size = 256
+        n_channels = 3
+        num_heads = 8
+        num_encoders = 12
+        dropout = 0.1
 
-    ## Eval
-    test_dataloader = get_dataloader(args.dataset_path, "test", batch_size=1)
-    for image, label in test_dataloader:
-        pred = student(image)
-        b, c, _, _ = pred.shape
-        pred = torch.transpose(pred.reshape(b, c, -1), 1, 2)        
-        l2_error = F.mse_loss(pred, label)
-        print(l2_error)
+        student = StudentModel(patch_size, n_channels, latent_size, num_heads, num_encoders, dropout, img_height=368, img_width=512)
+        student = nn.DataParallel(student)
+        student = student.to(InferenceParams.DEVICE)
+        student_learn(student, train_dataloader, args.scene_type, epochs=70)
+
+        ## Eval
+        test_dataloader = get_dataloader(args.dataset_path, args.scene_type, "test", batch_size=1)
+        student.eval()
+        torch.cuda.empty_cache()
+        with torch.no_grad():
+            for i, (image, label) in enumerate(test_dataloader):
+                image, label = image.to(InferenceParams.DEVICE), label.to(InferenceParams.DEVICE)
+                # label = torch.multiply(label, 10.0)
+                pred = student(image)
+                # b, c, _, _ = pred.shape
+                # pred = torch.transpose(pred.r
+                # eshape(b, c, -1), 1, 2)        
+                l2_error = F.mse_loss(pred, label)
+                print(f"Test image {i}:", l2_error)

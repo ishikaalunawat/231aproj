@@ -8,6 +8,7 @@ from torchvision import transforms
 from PIL import Image
 import numpy as np
 import sys, os
+import torch.nn.functional as F
 
 from dust3r.utils.image import load_images, rgb
 
@@ -36,6 +37,22 @@ class RGBDDataset(Dataset):
                     })
 
         return frames
+    import torch.nn.functional as F
+
+    def pad_to_square(self, image, fill=0):
+        _, h, w = image.shape
+        if h == w:
+            return image
+        
+        diff = abs(h - w)
+        pad1, pad2 = diff // 2, diff - diff // 2
+
+        if h < w:
+            padding = (0, 0, pad1, pad2)  # (left, right, top, bottom)
+        else:
+            padding = (pad1, pad2, 0, 0)  # (left, right, top, bottom)
+        
+        return F.pad(image, padding, mode='constant', value=fill)
 
     def __len__(self):
         return len(self.frames)
@@ -46,6 +63,7 @@ class RGBDDataset(Dataset):
 
         # load RGB image
         rgb_image = load_images([frame_info['color']], size=512, verbose=False)[0]['img'].squeeze()
+        # rgb_image = self.pad_to_square(rgb_image)
 
         # load scene coordinate image
         if self.train:
