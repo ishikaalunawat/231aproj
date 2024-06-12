@@ -61,7 +61,6 @@ def teacher_inference(args):
 
     mode = GlobalAlignerMode.PointCloudOptimizer if len(imgs) > 2 else GlobalAlignerMode.PairViewer
     scene = global_aligner(output, device=InferenceParams.DEVICE, mode=mode, verbose=True)
-    lr = 0.0001
 
     if mode == GlobalAlignerMode.PointCloudOptimizer:
         loss = scene.compute_global_alignment(
@@ -123,7 +122,10 @@ def student_learn(student, dataloader, model_type, scene_type, logger, epochs):
 
     if not os.path.exists("student_models"):
         os.mkdir("student_models")
-    
+
+    if not os.path.exists("student_models/{}".format(model_type)):
+        os.mkdir("student_models/{}".format(model_type))
+
     best_loss = float("Inf")
     for e in range(epochs):
         i = 0
@@ -145,6 +147,8 @@ def create_logger(args):
     test_logger.setLevel(logging.DEBUG)
 
     if not os.path.exists(f'logging/{args.model_type}/{args.scene_type}'):
+        if not os.path.exists("logging/{}".format(args.model_type)):
+            os.mkdir("logging/{}".format(args.model_type))
         os.mkdir(f'logging/{args.model_type}/{args.scene_type}')
 
     train_file_handler = logging.FileHandler(f'logging/{args.model_type}/{args.scene_type}/train.log', mode='w')
@@ -177,7 +181,7 @@ if __name__ == "__main__":
     train_dataloader = get_dataloader(train_dir, batch_size=4)
     if args.model_type == 'conv_pretrained':
         student = StudentModelPretrained().to(InferenceParams.DEVICE)
-        student.load_state_dict(torch.load("student_models/{}/{}.pth".format(args.model_type, args.scene_type)))
+        # student.load_state_dict(torch.load("student_models/{}/{}.pth".format(args.model_type, args.scene_type)))
     else:
         student = StudentModel().to(InferenceParams.DEVICE)
 
