@@ -166,7 +166,7 @@ if __name__ == "__main__":
         num_encoders = 12
         dropout = 0.1
 
-        student = StudentModel(patch_size, n_channels, latent_size, num_heads, num_encoders, dropout, img_height=368, img_width=512)
+        student = StudentModel(patch_size=16, n_channels=3, latent_size=256, num_heads=8, num_encoders=6, num_decoders=6, dropout=0.1)
         student = nn.DataParallel(student)
         student = student.to(InferenceParams.DEVICE)
         student_learn(student, train_dataloader, args.scene_type, epochs=70)
