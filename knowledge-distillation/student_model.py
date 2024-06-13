@@ -94,7 +94,7 @@ class StudentModel(nn.Module):
         self.loss = nn.MSELoss()
         self.optimizer = torch.optim.Adam(self.parameters(), lr=0.00025)
         self.optimizer.zero_grad()
-        self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.9)
+        # self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.9)
 
     def forward(self, x):
         batch_size, channels, height, width = x.size()

@@ -68,7 +68,7 @@ class RGBDDataset(Dataset):
         # load scene coordinate image
         if self.train:
             scene_coordinate_image = torch.load(frame_info['pts3d'])
-            return rgb_image, scene_coordinate_image
+            return rgb_image, scene_coordinate_image*100
         else:
             return rgb_image
 

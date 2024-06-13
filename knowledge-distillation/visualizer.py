@@ -16,10 +16,10 @@ def student_inference(model, dataloader, voxel_size = 0.02, device="cuda"):
 
             # Reshape and concatenate the point clouds from each frame
             point_cloud = output.view(-1, 3)
-            print(point_cloud.shape)
             pointcloud = o3d.geometry.PointCloud \
                         (o3d.utility.Vector3dVector(point_cloud.cpu().numpy()))
             pointcloud = pointcloud.voxel_down_sample(voxel_size=voxel_size)
+            print(pointcloud)
 
             pcds.append(pointcloud)
 

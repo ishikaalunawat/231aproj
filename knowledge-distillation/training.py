@@ -136,11 +136,11 @@ def student_learn(student, dataloader, scene_type, epochs):
             # label = torch.multiply(label, 10.0)
             torch.cuda.empty_cache()
             i += 1
-            loss += student.module.learn(image, label)
-        log_message = f"Epoch: {e} Avg. Loss: {np.mean(loss)}"
-        print(log_message)
-        logging.info(log_message)
-        student.module.scheduler.step()
+            loss = student.module.learn(image, label)
+            log_message = f"Epoch: {e}, Step{i}: {loss:.4f}"
+            print(log_message)
+            logging.info(log_message)
+        # student.module.scheduler.step()
 
     torch.save(student.module.state_dict(), "student_models/vit/{}.pth".format(scene_type))
 
@@ -159,17 +159,17 @@ if __name__ == "__main__":
         train_dataloader = get_dataloader(args.dataset_path, args.scene_type, "train", batch_size=4)
 
         ## STUDENT PARAMS
-        patch_size = 16
-        latent_size = 256
+        patch_size = 32
+        latent_size = 128
         n_channels = 3
-        num_heads = 8
-        num_encoders = 12
+        num_heads = 4
+        num_encoders = 4
         dropout = 0.1
 
         student = StudentModel(patch_size=16, n_channels=3, latent_size=256, num_heads=8, num_encoders=6, num_decoders=6, dropout=0.1)
         student = nn.DataParallel(student)
         student = student.to(InferenceParams.DEVICE)
-        student_learn(student, train_dataloader, args.scene_type, epochs=70)
+        student_learn(student, train_dataloader, args.scene_type, epochs=100)
 
         ## Eval
         test_dataloader = get_dataloader(args.dataset_path, args.scene_type, "test", batch_size=1)
